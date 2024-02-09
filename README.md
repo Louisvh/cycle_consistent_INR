@@ -25,17 +25,15 @@ This repository includes a script that runs the method for images in the DIR-Lab
 # Reference
 If you use this code, please cite the accompanying paper:
 
-_This entry will be updated once the paper has been assigned an official publication date and volume number._
-
-    @article{vanharten2023robust,
+    @article{vanharten2024robust,
       title={Robust deformable image registration using cycle-consistent implicit representations},
       author={van Harten, Louis D. and Stoker, Jaap and I{\v{s}}gum, Ivana},
       journal={IEEE Transactions on Medical Imaging},
-      volume={(in press)},
-      number={},
-      pages={},
+      volume={43},
+      number={2},
+      pages={784-793},
       doi={10.1109/TMI.2023.3321425}
-      year={2023},
+      year={2024},
       publisher={IEEE}
     }
 
