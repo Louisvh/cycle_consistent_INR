@@ -14,108 +14,29 @@ from objectives import regularizers
 class ImplicitRegistrator:
     """This is a class for registrating implicitly represented images."""
 
-    def __call__(
-        self, coordinate_tensor=None, output_shape=(28, 28), dimension=0, slice_pos=0
-    ):
-        """Return the image-values for the given input-coordinates."""
-
-        # Use standard coordinate tensor if none is given
-        if coordinate_tensor is None:
-            coordinate_tensor = self.make_coordinate_slice(
-                output_shape, dimension, slice_pos
-            )
-
-        output = self.network(coordinate_tensor)
-
-        # Shift coordinates by 1/n * v
-        coord_temp = torch.add(output, coordinate_tensor)
-
-        transformed_image = self.transform_no_add(coord_temp)
-        return (
-            transformed_image.cpu()
-            .detach()
-            .numpy()
-            .reshape(output_shape[0], output_shape[1])
-        )
-
     def __init__(self, moving_image, fixed_image, **kwargs):
         """Initialize the learning model."""
 
-        # Set all default arguments in a dict: self.args
         self.set_default_arguments()
+        self.parse_kwargs(kwargs)
 
-        # Check if all kwargs keys are valid (this checks for typos)
-        for kwarg in kwargs:
-            if kwarg not in self.args.keys():
-                if False:  #silence for now
-                    print(f'\n---\nwarning: kwarg {kwarg} not found in args!!\n---')
+        self.initialize_networks()
+        self.initialize_optimizer()
 
-        # Parse important argument from kwargs
-        self.epochs = kwargs["epochs"] if "epochs" in kwargs else self.args["epochs"]
-        self.log_interval = (
-            kwargs["log_interval"]
-            if "log_interval" in kwargs
-            else self.args["log_interval"]
+        self.moving_image = moving_image
+        self.fixed_image = fixed_image
+        if self.gpu:
+            self.moving_image = self.moving_image.cuda()
+            self.fixed_image = self.fixed_image.cuda()
+
+        self.possible_coordinate_tensor = general.make_masked_coordinate_tensor(
+            self.mask, self.fixed_image.shape
         )
-        self.gpu = kwargs["gpu"] if "gpu" in kwargs else self.args["gpu"]
-        self.lr = kwargs["lr"] if "lr" in kwargs else self.args["lr"]
-        self.onecycle_policy = kwargs["onecycle_policy"] if "onecycle_policy" in kwargs else self.args["onecycle_policy"]
-        self.momentum = (
-            kwargs["momentum"] if "momentum" in kwargs else self.args["momentum"]
-        )
-        self.optimizer_arg = (
-            kwargs["optimizer"] if "optimizer" in kwargs else self.args["optimizer"]
-        )
-        self.loss_function_arg = (
-            kwargs["loss_function"]
-            if "loss_function" in kwargs
-            else self.args["loss_function"]
-        )
-        self.layers = kwargs["layers"] if "layers" in kwargs else self.args["layers"]
-        self.weight_init = (
-            kwargs["weight_init"]
-            if "weight_init" in kwargs
-            else self.args["weight_init"]
-        )
-        self.omega = kwargs["omega"] if "omega" in kwargs else self.args["omega"]
-        self.save_folder = (
-            kwargs["save_folder"]
-            if "save_folder" in kwargs
-            else self.args["save_folder"]
+        self.possible_coordinate_tensor_reverse = general.make_masked_coordinate_tensor(
+            self.mask_2, self.fixed_image.shape
         )
 
-        # Parse other arguments from kwargs
-        self.verbose = (
-            kwargs["verbose"] if "verbose" in kwargs else self.args["verbose"]
-        )
-
-        # Make folder for output
-        if not self.save_folder == "" and not os.path.isdir(self.save_folder):
-            os.makedirs(self.save_folder, exist_ok=True)
-
-        # Add slash to divide folder and filename
-        self.save_folder += "/"
-
-        # Make loss list to save losses
-        self.loss_list = [0 for _ in range(self.epochs)]
-        self.data_loss_list = [0 for _ in range(self.epochs)]
-        self.cycle_loss_list = [0 for _ in range(self.epochs)]
-
-        # Set seed
-        self.seed = (
-            kwargs["seed"] if "seed" in kwargs else self.args["seed"]
-        )
-        torch.manual_seed(self.seed)
-
-        # Load network
-        self.network_from_file = (
-            kwargs["network"] if "network" in kwargs else self.args["network"]
-        )
-        self.network_type = (
-            kwargs["network_type"]
-            if "network_type" in kwargs
-            else self.args["network_type"]
-        )
+    def initialize_networks(self):
         if self.network_type == "MLP":
             self.network = networks.MLP(self.layers)
             self.network_rev = networks.MLP(self.layers)
@@ -125,7 +46,6 @@ class ImplicitRegistrator:
         else:
             print(f'network type {self.network_type} not found!')
             exit
-
         if self.verbose:
             print(
                 "Network contains {} trainable parameters.".format(
@@ -134,13 +54,12 @@ class ImplicitRegistrator:
             )
         if self.network_from_file is not None:
             self.network.load_state_dict(torch.load(self.network_from_file))
-            self.network_rev.load_state_dict(torch.load(self.network_from_file.replace('F','B')))
-
-        # Move variables to GPU
+            self.network_rev.load_state_dict(torch.load(self.network_from_file.replace('F', 'B')))
         if self.gpu:
             self.network.cuda()
             self.network_rev.cuda()
 
+    def initialize_optimizer(self):
         # Choose the optimizer
         m_params = list(self.network.parameters()) + list(self.network_rev.parameters())
         if self.optimizer_arg.lower() == "sgd":
@@ -164,7 +83,6 @@ class ImplicitRegistrator:
                 + str(self.optimizer_arg)
                 + " not recognized as optimizer, picked SGD instead"
             )
-
         # Choose the loss function
         if self.loss_function_arg.lower() == "mse":
             self.criterion = nn.MSELoss()
@@ -189,25 +107,90 @@ class ImplicitRegistrator:
                 + " not recognized as loss function, picked MSE instead"
             )
 
-        # Parse arguments from kwargs
+    def parse_kwargs(self, kwargs):
+        # Check if all kwargs keys are valid (this checks for typos)
+        for kwarg in kwargs:
+            if kwarg not in self.args.keys():
+                print(f'\n---\nwarning: kwarg {kwarg} not found in args!!\n---')
+        # Parse important argument from kwargs
+        self.epochs = kwargs["epochs"] if "epochs" in kwargs else self.args["epochs"]
+        self.log_interval = (
+            kwargs["log_interval"]
+            if "log_interval" in kwargs
+            else self.args["log_interval"]
+        )
+        self.gpu = kwargs["gpu"] if "gpu" in kwargs else self.args["gpu"]
+        self.lr = kwargs["lr"] if "lr" in kwargs else self.args["lr"]
+        self.onecycle_policy = kwargs["onecycle_policy"] if "onecycle_policy" in kwargs else self.args[
+            "onecycle_policy"]
+        self.momentum = (
+            kwargs["momentum"] if "momentum" in kwargs else self.args["momentum"]
+        )
+        self.optimizer_arg = (
+            kwargs["optimizer"] if "optimizer" in kwargs else self.args["optimizer"]
+        )
+        self.loss_function_arg = (
+            kwargs["loss_function"]
+            if "loss_function" in kwargs
+            else self.args["loss_function"]
+        )
+        self.layers = kwargs["layers"] if "layers" in kwargs else self.args["layers"]
+        self.weight_init = (
+            kwargs["weight_init"]
+            if "weight_init" in kwargs
+            else self.args["weight_init"]
+        )
+        self.omega = kwargs["omega"] if "omega" in kwargs else self.args["omega"]
+        self.save_folder = (
+            kwargs["save_folder"]
+            if "save_folder" in kwargs
+            else self.args["save_folder"]
+        )
+        # Parse other arguments from kwargs
+        self.verbose = (
+            kwargs["verbose"] if "verbose" in kwargs else self.args["verbose"]
+        )
+        # Make folder for output
+        if not self.save_folder == "" and not os.path.isdir(self.save_folder):
+            os.makedirs(self.save_folder, exist_ok=True)
+        # Add slash to divide folder and filename
+        self.save_folder += "/"
+        # Make loss list to save losses
+        self.loss_list = [0 for _ in range(self.epochs)]
+        self.data_loss_list = [0 for _ in range(self.epochs)]
+        self.cycle_loss_list = [0 for _ in range(self.epochs)]
+        # Set seed
+        self.seed = (
+            kwargs["seed"] if "seed" in kwargs else self.args["seed"]
+        )
+        torch.manual_seed(self.seed)
+        # Load network
+        self.network_from_file = (
+            kwargs["network"] if "network" in kwargs else self.args["network"]
+        )
+        self.network_type = (
+            kwargs["network_type"]
+            if "network_type" in kwargs
+            else self.args["network_type"]
+        )
+
         self.mask = kwargs["mask"] if "mask" in kwargs else self.args["mask"]
         self.mask_2 = kwargs["mask_2"] if "mask_2" in kwargs else self.args["mask_2"]
         self.cycle_l1 = (
-            kwargs["cycle_l1"] 
-            if "cycle_l1" in kwargs 
+            kwargs["cycle_l1"]
+            if "cycle_l1" in kwargs
             else self.args["cycle_l1"]
         )
         self.cycle_loss_schedule = (
-            kwargs["cycle_loss_schedule"] 
-            if "cycle_loss_schedule" in kwargs 
+            kwargs["cycle_loss_schedule"]
+            if "cycle_loss_schedule" in kwargs
             else self.args["cycle_loss_schedule"]
         )
         self.cycle_loss_delay = (
-            kwargs["cycle_loss_delay"] 
-            if "cycle_loss_delay" in kwargs 
+            kwargs["cycle_loss_delay"]
+            if "cycle_loss_delay" in kwargs
             else self.args["cycle_loss_delay"]
         )
-
         # Parse regularization kwargs
         self.raw_jacobian_regularization = (
             kwargs["raw_jacobian_regularization"]
@@ -224,7 +207,6 @@ class ImplicitRegistrator:
             if "alpha_jacobian" in kwargs
             else self.args["alpha_jacobian"]
         )
-
         self.hyper_regularization = (
             kwargs["hyper_regularization"]
             if "hyper_regularization" in kwargs
@@ -235,7 +217,6 @@ class ImplicitRegistrator:
             if "alpha_hyper" in kwargs
             else self.args["alpha_hyper"]
         )
-
         self.bending_regularization = (
             kwargs["bending_regularization"]
             if "bending_regularization" in kwargs
@@ -246,10 +227,8 @@ class ImplicitRegistrator:
             if "alpha_bending" in kwargs
             else self.args["alpha_bending"]
         )
-
         # Set seed
         torch.manual_seed(self.seed)
-
         # Parse arguments from kwargs
         self.image_shape = (
             kwargs["image_shape"]
@@ -274,28 +253,10 @@ class ImplicitRegistrator:
         )
         self.voxel_size = torch.tensor(self.voxel_size).cuda()
 
-        # Initialization
-        self.moving_image = moving_image
-        self.fixed_image = fixed_image
-
-        self.possible_coordinate_tensor = general.make_masked_coordinate_tensor(
-            self.mask, self.fixed_image.shape
-        )
-        self.possible_coordinate_tensor_reverse = general.make_masked_coordinate_tensor(
-            self.mask_2, self.fixed_image.shape
-        )
-
-        if self.gpu:
-            self.moving_image = self.moving_image.cuda()
-            self.fixed_image = self.fixed_image.cuda()
-
     def cuda(self):
         """Move the model to the GPU."""
-
-        # Standard variables
         self.network.cuda()
         self.network_rev.cuda()
-
 
     def set_default_arguments(self):
         """Set default arguments."""
@@ -482,28 +443,6 @@ class ImplicitRegistrator:
         if self.verbose:
             self.loss_list[epoch] = loss.detach().cpu().numpy()
 
-    def transform(
-        self, transformation, coordinate_tensor=None, moving_image=None, reshape=False
-    ):
-        """Transform moving image given a transformation."""
-
-        # If no specific coordinate tensor is given use the standard one of 28x28
-        if coordinate_tensor is None:
-            coordinate_tensor = self.coordinate_tensor
-
-        # If no moving image is given use the standard one
-        if moving_image is None:
-            moving_image = self.moving_image
-
-        # From relative to absolute
-        transformation = torch.add(transformation, coordinate_tensor)
-        return general.fast_trilinear_interpolation(
-            moving_image,
-            transformation[:, 0],
-            transformation[:, 1],
-            transformation[:, 2],
-        )
-
     def transform_no_add(self, transformation, moving_image=None, reshape=False):
         """Transform moving image given a transformation."""
 
@@ -538,14 +477,108 @@ class ImplicitRegistrator:
         for i in tqdm.tqdm(range(epochs)):
             self.training_iteration(i)
 
-            if i % (epochs//50) == 0 and self.verbose:
+            if i % (max(epochs//50,1)) == 0 and self.verbose:
                 self.save_losslogs()
 
         print('loss (start, middle, end)')
         print(self.loss_list[0], self.loss_list[epochs//2], self.loss_list[-1])
-        np.savetxt('/tmp/loss_log.txt', self.loss_list)
-        np.savetxt('/tmp/data_loss_log.txt', self.data_loss_list)
-        np.savetxt('/tmp/cycle_loss_log.txt', self.cycle_loss_list)
+
+    def generate_valslice(self, plotdim, outshape, loc=0.1, only_fields=False, inf_order=1, max_batch=10000, normalize=True):
+        xcoords = torch.arange(-1, 1 + 1e-6, 2 / (outshape[0] - 1))
+        ycoords = torch.arange(-1, 1 + 1e-6, 2 / (outshape[1] - 1))
+        coordgrid_x, coordgrid_y = torch.meshgrid(xcoords, ycoords)
+        if plotdim == 0:
+            coordgrid_3d = (torch.zeros_like(coordgrid_x) + loc, coordgrid_x, coordgrid_y)
+        elif plotdim == 1:
+            coordgrid_3d = (coordgrid_x, torch.zeros_like(coordgrid_x) + loc, coordgrid_y)
+        else:
+            coordgrid_3d = (coordgrid_x, coordgrid_y, torch.zeros_like(coordgrid_x) + loc)
+        coordinates = torch.stack(coordgrid_3d, axis=-1).cuda()
+        in_coords = coordinates.flatten(0, -2)
+        in_coords = in_coords.requires_grad_(True)
+
+        sampled_fixed_mask = torch.nn.functional.grid_sample(torch.Tensor(self.mask[None, None, :]).cuda(),
+                                                             torch.flip(in_coords[None, None, None, :], [-1]),
+                                                             align_corners=True).reshape(outshape)
+        nonzero_mask_fw = (sampled_fixed_mask > 0).flatten()
+        in_coords_fw = in_coords[nonzero_mask_fw]
+        dvecresult = torch.zeros_like(in_coords)
+        uncert_fw = torch.zeros_like(in_coords)
+
+        sampled_moving_mask = torch.nn.functional.grid_sample(torch.Tensor(self.mask_2[None, None, :]).cuda(),
+                                                                torch.flip(in_coords[None, None, None, :], [-1]),
+                                                                align_corners=True).reshape(outshape)
+        nonzero_mask_bw = (sampled_moving_mask > 0).flatten()
+        in_coords_bw = in_coords[nonzero_mask_bw]
+        dvecresult_rev = torch.zeros_like(in_coords)
+        uncert_bw = torch.zeros_like(in_coords)
+
+        if inf_order > 0:
+            if in_coords_fw.shape[0] > 0:
+                co_FS_fw, co_BFS_fw, transformed_offset_fw = general.compute_coordinates_cycle_autoretry(self.network, self.network_rev, in_coords_fw, max_batch=max_batch, inf_order=inf_order)
+                coordresult_fw = co_FS_fw + 0.5 * transformed_offset_fw
+                partial_dvecresult = coordresult_fw - in_coords_fw
+                dvecresult[nonzero_mask_fw] = partial_dvecresult
+                uncert_fw[nonzero_mask_fw] = transformed_offset_fw
+            if in_coords_bw.shape[0] > 0:
+                co_FS_bw, co_BFS_bw, transformed_offset_bw = general.compute_coordinates_cycle_autoretry(self.network_rev, self.network, in_coords_bw, max_batch=max_batch, inf_order=inf_order)
+                coordresult_bw = co_FS_bw + 0.5 * transformed_offset_bw
+                partial_dvecresult_rev = coordresult_bw - in_coords_bw
+                dvecresult_rev[nonzero_mask_bw] = partial_dvecresult_rev
+                uncert_bw[nonzero_mask_bw] = transformed_offset_bw
+        else:
+            if in_coords_fw.shape[0] > 0:
+                partial_dvecresult = self.network(in_coords_fw)
+                dvecresult[nonzero_mask_fw] = partial_dvecresult
+            if in_coords_bw.shape[0] > 0:
+                partial_dvecresult_rev = self.network_rev(in_coords_bw)
+                dvecresult_rev[nonzero_mask_bw] = partial_dvecresult_rev
+
+        fw_field = dvecresult.reshape(outshape + [3]).detach().cpu().numpy()
+        bw_field = dvecresult_rev.reshape(outshape + [3]).detach().cpu().numpy()
+        uncert_fw = uncert_fw.reshape(outshape + [3]).detach().cpu().numpy()
+        uncert_bw = uncert_bw.reshape(outshape + [3]).detach().cpu().numpy()
+        field_slices = (fw_field, bw_field, uncert_fw, uncert_bw)
+        if only_fields:
+            return field_slices
+
+        pred_coords = in_coords + dvecresult
+        pred_coords_rev = in_coords + dvecresult_rev
+
+        sampled_fixed_im = torch.nn.functional.grid_sample(self.fixed_image[None, None, :],
+                                                           torch.flip(in_coords[None, None, None, :], [-1]),
+                                                           align_corners=True).reshape(outshape).detach().cpu().numpy()
+        sampled_moving_im = torch.nn.functional.grid_sample(self.moving_image[None, None, :],
+                                                            torch.flip(in_coords[None, None, None, :], [-1]),
+                                                            align_corners=True).reshape(outshape).detach().cpu().numpy()
+        sampled_pred_im = torch.nn.functional.grid_sample(self.moving_image[None, None, :],
+                                                          torch.flip(pred_coords[None, None, None, :], [-1]),
+                                                          align_corners=True).reshape(outshape)
+        sampled_pred_im *= 1 * (sampled_fixed_mask > 0)
+        sampled_pred_im = sampled_pred_im.detach().cpu().numpy()
+
+        sampled_predrev_im = torch.nn.functional.grid_sample(self.fixed_image[None, None, :],
+                                                             torch.flip(pred_coords_rev[None, None, None, :], [-1]),
+                                                             align_corners=True).reshape(outshape)
+        sampled_predrev_im *= 1 * (sampled_moving_mask > 0)
+        sampled_predrev_im = sampled_predrev_im.detach().cpu().numpy()
+
+        im_slices = (
+            sampled_fixed_im, sampled_moving_im, sampled_pred_im, sampled_predrev_im,
+            sampled_fixed_im - sampled_pred_im, sampled_moving_im - sampled_predrev_im,
+            (sampled_fixed_mask.detach().cpu().numpy() > 0) * 1.0,
+            (sampled_moving_mask.detach().cpu().numpy() > 0) * 1.0
+        )
+        if normalize:
+            # ensure there is at least 1 zero-value in the masks to prevent issues with normalization
+            im_slices[-1][0, 0] = 0
+            im_slices[-2][0, 0] = 0
+
+            shifted_im_slices = [x - x.min() for x in im_slices]
+            normed_im_slices = [x / x.max() for x in shifted_im_slices]
+        else:
+            normed_im_slices = im_slices
+        return field_slices, normed_im_slices
 
     def save_losslogs(self, experiment_name='default'):
         np.savetxt(f'{self.save_folder}/loss_log_{experiment_name}.txt',

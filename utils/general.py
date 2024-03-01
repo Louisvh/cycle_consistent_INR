@@ -61,11 +61,24 @@ def compute_jacobian_matrix(input_coords, output, add_identity=True):
             jacobian_matrix[:, i, i] += torch.ones_like(jacobian_matrix[:, i, i])
     return jacobian_matrix
 
-def compute_landmarks_cycle(network, network_rev, landmarks_pre, image_size):
-    scale_of_axes = [(0.5 * s) for s in image_size]
 
-    coordmarks_S = landmarks_to_coordmarks(landmarks_pre, image_size).cuda()
-    
+def compute_coordinates_cycle_autoretry(network, network_rev, coordmarks_S, max_batch=10000, inf_order=1):
+    if coordmarks_S.shape[0] > max_batch:
+        split1, split2 = torch.split(coordmarks_S, (coordmarks_S.shape[0] + 1) // 2)
+
+        co_FS1, co_BFS1, transformed_offset1 = compute_coordinates_cycle_autoretry(network, network_rev, split1, inf_order=inf_order)
+        co_FS2, co_BFS2, transformed_offset2 = compute_coordinates_cycle_autoretry(network, network_rev, split2, inf_order=inf_order)
+
+        co_FS = torch.cat((co_FS1, co_FS2), dim=0)
+        co_BFS = torch.cat((co_BFS1, co_BFS2), dim=0)
+        transformed_offset = torch.cat((transformed_offset1, transformed_offset2), dim=0)
+
+        return co_FS, co_BFS, transformed_offset
+    else:
+        return compute_coordinates_cycle(network, network_rev, coordmarks_S, inf_order=inf_order)
+
+
+def compute_coordinates_cycle(network, network_rev, coordmarks_S, inf_order=1):
     co_FS_delta = network(coordmarks_S)
     co_FS = coordmarks_S + co_FS_delta
 
@@ -75,30 +88,31 @@ def compute_landmarks_cycle(network, network_rev, landmarks_pre, image_size):
     dist_S_BFS = coordmarks_S - co_BFS
     jac_B_at_co_FS = compute_jacobian_matrix(co_FS, co_BFS, add_identity=False)
 
-    offset_1st_der = torch.zeros_like(dist_S_BFS)
-    offset_2nd_der = torch.zeros_like(dist_S_BFS)
-    transformed_offset = torch.zeros_like(dist_S_BFS)
-    transformed_offset_1st = torch.zeros_like(dist_S_BFS)
-    for i in range(dist_S_BFS.shape[0]):
-        b_i = dist_S_BFS[i,:]
-        a_i = torch.inverse(jac_B_at_co_FS[i,:,:]).T
-        offset_1st_der[i,:] = torch.matmul(b_i,a_i)
-        transformed_offset_1st[i,:] = offset_1st_der[i,:]
+    altcalc_dist_S_BFS = dist_S_BFS.view(dist_S_BFS.shape[0], 1, dist_S_BFS.shape[1])
+    inv_jac_B_at_co_FS = torch.linalg.inv(jac_B_at_co_FS).transpose(-2, -1)
+    offset_1st_der = torch.bmm(altcalc_dist_S_BFS, inv_jac_B_at_co_FS).squeeze(1)
+    transformed_offset_1st = offset_1st_der.detach()
+    if inf_order > 1:
+        hessian_B_at_co_FS = compute_jacobian_matrix(co_FS, co_FS+offset_1st_der, add_identity=False)
+        altcalc_dist_S_BFS = dist_S_BFS.view(dist_S_BFS.shape[0], 1, dist_S_BFS.shape[1])
+        tp_hess_B_at_co_FS = hessian_B_at_co_FS.transpose(-2, -1)
+        offset_2nd_der = torch.bmm(altcalc_dist_S_BFS, tp_hess_B_at_co_FS).squeeze(1).detach()
 
-    hessian_B_at_co_FS = compute_jacobian_matrix(co_FS, co_FS+offset_1st_der, add_identity=False)
-    for i in range(dist_S_BFS.shape[0]):
-        b_i = dist_S_BFS[i,:]
-        a_i_inv = torch.inverse(hessian_B_at_co_FS[i,:,:])
-        a_i = hessian_B_at_co_FS[i,:,:].T
-        offset_2nd_der[i,:] = torch.matmul(b_i,a_i)
+        transformed_offset = transformed_offset_1st + 0.5 * offset_2nd_der
+    else:
+        transformed_offset = transformed_offset_1st
 
-    transformed_offset = transformed_offset_1st + 0.5 * offset_2nd_der
+    return co_FS, co_BFS, transformed_offset
 
-    co_2invB_FS = co_FS+transformed_offset
 
-    co_midpoint_FS_iBS = co_FS + 0.5*transformed_offset
+def compute_landmarks_cycle(network, network_rev, landmarks_pre, image_size):
+    coordmarks_S = landmarks_to_coordmarks(landmarks_pre, image_size).cuda()
+
+    co_FS, co_BFS, transformed_offset = compute_coordinates_cycle_autoretry(network, network_rev, coordmarks_S)
+
+    co_midpoint_FS_iBS = co_FS + 0.5 * transformed_offset
     result_landmarks_FS = coordmarks_to_landmarks(co_FS, image_size).detach().cpu().numpy()
-    result_landmarks_iBS = coordmarks_to_landmarks(co_2invB_FS, image_size).detach().cpu().numpy()
+    result_landmarks_iBS = coordmarks_to_landmarks(co_FS + transformed_offset, image_size).detach().cpu().numpy()
     result_landmarks_cyclecor = coordmarks_to_landmarks(co_midpoint_FS_iBS, image_size).detach().cpu().numpy()
     uncertainty = result_landmarks_FS - result_landmarks_iBS
 
