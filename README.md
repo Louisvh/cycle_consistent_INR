@@ -19,7 +19,7 @@ Cycle-consistent image registration is generally assumed to result in more plaus
 ![Visual results!](results/ccIDIR_simulated_bowel_result.png "Qualitative Results")
 
 # Running the code
-This repository includes a script that runs the method for images in the DIR-Lab dataset. To replicate the experiments, prepare the data as detailed in [the IDIR repository](https://github.com/MIAGroupUT/IDIR), make sure the DATA directory is correctly set in the run script (default: `~/DATA/DIRLAB`). Finally, run `python run_cycle_consistent.py #` where `#` is an optional case number that corresponds to a subject in the DIR-Lab set (default: 8).
+This repository includes a script that runs the method for images in the DIR-Lab dataset. To replicate the experiments, prepare the data as detailed in [the IDIR repository](https://github.com/MIAGroupUT/IDIR), make sure the DATA directory is correctly set in the run script (default: `~/DATA/DIRLAB`). Finally, run `python run_dirlab_cycle_consistent.py #` where `#` is an optional case number that corresponds to a subject in the DIR-Lab set (default: 8).
 
 To run the method on other images, use `cycle_inference_script.py`. This can be used to propagate landmarks, or to generate transformed images. The command line arguments should be self-explanatory. A set of simulated bowel images is included in the `example_data`, which can be run with `run_example.sh`.
 
